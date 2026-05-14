@@ -1,0 +1,276 @@
+name: QA Checks
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Secret Detection
+  # Scans for hardcoded secrets before anything else.
+  # This is the #1 AI code failure pattern — catch it first.
+  # ─────────────────────────────────────────────
+  secret-detection:
+    name: 🔐 Secret Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for git-based secret scanning
+
+      - name: Run TruffleHog secret scanner
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Dependency Security Audit
+  # Checks for known vulnerabilities in AI-generated dependency lists.
+  # ─────────────────────────────────────────────
+  dependency-audit:
+    name: 📦 Dependency Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Node.js / npm audit
+      - name: Setup Node.js
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        if: hashFiles('package.json') != ''
+        run: npm ci
+
+      - name: Run npm audit
+        if: hashFiles('package.json') != ''
+        run: npm audit --audit-level=high
+        continue-on-error: true  # Report but don't block — review findings manually
+
+      # Python / pip audit
+      - name: Setup Python
+        if: hashFiles('requirements.txt') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pip-audit
+        if: hashFiles('requirements.txt') != ''
+        run: pip install pip-audit
+
+      - name: Run pip-audit
+        if: hashFiles('requirements.txt') != ''
+        run: pip-audit -r requirements.txt
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────
+  # JOB 3: Static Code Analysis
+  # Catches common AI code failure patterns automatically.
+  # ─────────────────────────────────────────────
+  static-analysis:
+    name: 🔍 Static Code Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # JavaScript / TypeScript — ESLint
+      - name: Setup Node.js
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        if: hashFiles('package.json') != ''
+        run: npm ci
+
+      - name: Run ESLint
+        if: hashFiles('.eslintrc*', 'eslint.config*') != ''
+        run: npx eslint . --ext .js,.jsx,.ts,.tsx --max-warnings=0
+        continue-on-error: true
+
+      - name: Run TypeScript type check
+        if: hashFiles('tsconfig.json') != ''
+        run: npx tsc --noEmit
+        continue-on-error: true
+
+      # Python — Ruff + Bandit
+      - name: Setup Python
+        if: hashFiles('requirements.txt', 'pyproject.toml') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python linters
+        if: hashFiles('requirements.txt', 'pyproject.toml') != ''
+        run: pip install ruff bandit
+
+      - name: Run Ruff (Python linter)
+        if: hashFiles('requirements.txt', 'pyproject.toml') != ''
+        run: ruff check .
+        continue-on-error: true
+
+      - name: Run Bandit (Python security linter)
+        if: hashFiles('requirements.txt', 'pyproject.toml') != ''
+        run: bandit -r . -ll
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────
+  # JOB 4: Unit and Integration Tests
+  # Runs your existing test suite on every push.
+  # ─────────────────────────────────────────────
+  run-tests:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Node.js tests (Jest, Vitest, Mocha)
+      - name: Setup Node.js
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: hashFiles('package.json') != ''
+        run: npm ci
+
+      - name: Run tests
+        if: hashFiles('package.json') != ''
+        run: npm test -- --passWithNoTests
+        env:
+          NODE_ENV: test
+          CI: true
+
+      # Python tests (pytest)
+      - name: Setup Python
+        if: hashFiles('requirements.txt', 'pyproject.toml') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        if: hashFiles('requirements.txt') != ''
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        if: hashFiles('requirements.txt', 'pyproject.toml') != ''
+        run: python -m pytest --tb=short -q
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────
+  # JOB 5: Build Verification
+  # Confirms the app actually builds without errors.
+  # AI-generated code sometimes references files or imports that don't exist.
+  # ─────────────────────────────────────────────
+  build:
+    name: 🏗️ Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: hashFiles('package.json') != ''
+        run: npm ci
+
+      - name: Build application
+        if: hashFiles('package.json') != ''
+        run: npm run build
+        env:
+          NODE_ENV: production
+          CI: false  # Prevents treating warnings as errors during build
+
+  # ─────────────────────────────────────────────
+  # JOB 6: Accessibility Check (on PRs only)
+  # Runs axe-core accessibility scan on built output.
+  # Catches common AI accessibility failures automatically.
+  # ─────────────────────────────────────────────
+  accessibility:
+    name: ♿ Accessibility Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install axe-cli
+        run: npm install -g @axe-core/cli
+
+      - name: Start app in background
+        run: npm run dev &
+        env:
+          NODE_ENV: development
+
+      - name: Wait for app to start
+        run: npx wait-on http://localhost:3000 --timeout 60000
+
+      - name: Run axe accessibility scan
+        run: axe http://localhost:3000 --exit
+        continue-on-error: true  # Report violations but don't block PR
+
+  # ─────────────────────────────────────────────
+  # JOB 7: Console.log Detection
+  # Searches for debug statements left in production code.
+  # AI-generated code pattern #14 in known-ai-code-failures.md
+  # ─────────────────────────────────────────────
+  debug-statement-check:
+    name: 🔎 Debug Statement Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for console.log in source files
+        run: |
+          echo "Checking for console.log statements in source files..."
+          if grep -r "console\.log" --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            --exclude="*.test.*" --exclude="*.spec.*" .; then
+            echo "⚠️  WARNING: console.log statements found in source code."
+            echo "Review these before deploying to production."
+          else
+            echo "✅ No console.log statements found in source files."
+          fi
+        continue-on-error: true  # Warn but don't block
+
+      - name: Check for debugger statements
+        run: |
+          echo "Checking for debugger statements..."
+          if grep -r "debugger" --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            --exclude="*.test.*" --exclude="*.spec.*" .; then
+            echo "🔴 ERROR: debugger statements found — these must be removed before deployment."
+            exit 1
+          else
+            echo "✅ No debugger statements found."
+          fi
